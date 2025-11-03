@@ -1,63 +1,83 @@
-// === 0) DOM-елементи з твого коду ===
+/* =======================
+   BGone – app.js (FULL)
+   ======================= */
+
+/* ---- UI елементи ---- */
 const file = document.getElementById("file");
 const cameraBtn = document.getElementById("camera");
 const picker = document.getElementById("picker");
-const savePng = document.getElementById("savePng");
-const savePdf = document.getElementById("savePdf");
 const uploadBgBtn = document.getElementById("uploadBgBtn");
 const bgFile = document.getElementById("bgFile");
+const savePng = document.getElementById("savePng");
+const autoRemoveBtn = document.getElementById("autoRemove"); // кнопка "Автовидалення фону (AI)"
+const featherInput = document.getElementById("feather");      // повзунок м’якості краю (0..3)
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
-// Нові елементи:
-const autoRemoveBtn = document.getElementById("autoRemove");
-const featherInput = document.getElementById("feather");
+/* ---- Стани ---- */
+let img = new Image();          // вихідне зображення
+let bgImg = null;               // фон-картинка (якщо завантажено)
+let session = null;             // ONNX Runtime сесія
+let lastMat = null;             // { alpha: Float32Array, width, height } – остання маска
 
-// Робочі канви
+/* ---- Робоча канва для прозорого форграунду ---- */
 const fgCanvas = document.createElement("canvas");
 const fgCtx = fgCanvas.getContext("2d", { willReadFrequently: true });
 
-// Стан
-let img = new Image();
-let bgImg = null;
-let session = null;  // ONNX сесія
-let lastMat = null;  // Float32Array( h * w ) — мат (0..1) після моделі
+/* ---- Шлях до моделі ---- */
+const MODEL_PATH = "/bgone/models/u2netp.onnx";
 
-// === 1) Завантаження моделі один раз ===
-async function loadModel() {
-  if (session) return;
-  // u2netp очікує 320x320 RGB, нормалізований тензор
-  session = await ort.InferenceSession.create("/bgone/models/u2netp.onnx", {
-    executionProviders: ["wasm"]
-  });
-  console.log("U2Netp loaded");
+/* =======================
+   1) Базове відмальовування
+   ======================= */
+function draw() {
+  if (!img.src) return;
+  canvas.width = img.naturalWidth || img.width;
+  canvas.height = img.naturalHeight || img.height;
+
+  // Фон – або зображення, або колір
+  if (bgImg) {
+    ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
+  } else {
+    ctx.fillStyle = picker.value || "#ffffff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  // Поки без альфи: просто поверх
+  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 }
 
-// === 2) Утіліта: ресайз у 320x320 і підготовка тензора ===
+/* =======================
+   2) Підготовка вхідного тензора 1×3×320×320 (NCHW)
+   ======================= */
 function imageToTensor(imageBitmap, target = 320) {
   const tmp = document.createElement("canvas");
   tmp.width = target;
   tmp.height = target;
   const tctx = tmp.getContext("2d", { willReadFrequently: true });
-  // Вписуємо картинку з збереженням пропорцій і заповненням чорним (ок)
+
+  // Вписуємо зображення в квадрат 320×320 з letterbox (чорні поля)
   const scale = Math.min(target / imageBitmap.width, target / imageBitmap.height);
   const w = Math.round(imageBitmap.width * scale);
   const h = Math.round(imageBitmap.height * scale);
   const ox = Math.floor((target - w) / 2);
   const oy = Math.floor((target - h) / 2);
+
   tctx.fillStyle = "black";
   tctx.fillRect(0, 0, target, target);
   tctx.drawImage(imageBitmap, ox, oy, w, h);
 
   const { data } = tctx.getImageData(0, 0, target, target);
-  // NCHW: 1x3x320x320, нормалізація до [0,1]
+
+  // NCHW: 1×3×H×W, значення у [0..1]
   const floatData = new Float32Array(1 * 3 * target * target);
   let idx = 0;
+  // Канали в порядку R,G,B
   for (let c = 0; c < 3; c++) {
     for (let y = 0; y < target; y++) {
       for (let x = 0; x < target; x++) {
         const i = (y * target + x) * 4;
-        const v = data[i + c] / 255; // просте масштабування
+        const v = data[i + c] / 255;
         floatData[idx++] = v;
       }
     }
@@ -65,68 +85,93 @@ function imageToTensor(imageBitmap, target = 320) {
   return { floatData, ox, oy, w, h, target };
 }
 
-// === 3) Інференс U²-Netp → маска (0..1) розміром оригіналу ===
+/* =======================
+   3) Завантаження моделі (1 раз)
+   ======================= */
+async function loadModel() {
+  if (session) return;
+  if (!globalThis.ort) {
+    throw new Error("ONNX Runtime не підключено. Додай ort.min.js у index.html");
+  }
+  session = await ort.InferenceSession.create(MODEL_PATH, {
+    executionProviders: ["wasm"]
+  });
+  console.log("U2Netp loaded", "inputs:", session.inputNames, "outputs:", session.outputNames);
+}
+
+/* =======================
+   4) Інференс: отримуємо маску (alpha 0..1) під оригінальний розмір
+   ======================= */
 async function runMatting(originalImage) {
   await loadModel();
 
-  // a) Підготовка
-  // Створимо ImageBitmap для швидкого ресайзу
   const ib = await createImageBitmap(originalImage);
   const { floatData, ox, oy, w, h, target } = imageToTensor(ib, 320);
 
-  const input = new ort.Tensor("float32", floatData, [1, 3, target, target]);
-  const feeds = { "input": input }; // ім’я інпуту у деяких збірках: "input" / "image"
-  let results = await session.run(feeds);
-  // пошукай ключ виходу — часто "output" або "u2netp_output"
-  const out = results[Object.keys(results)[0]]; // беремо перший тензор
-  const outData = out.data; // Float32Array(1*1*320*320) або подібне
-  // b) Забираємо центр (там де реальна картинка), повертаємо у розмір оригіналу
+  const inputName = session.inputNames[0];    // динамічні назви важливі!
+  const outputName = session.outputNames[0];
 
-  // 1) Масштабуємо мат в канву 320x320
+  const inputTensor = new ort.Tensor("float32", floatData, [1, 3, target, target]);
+  const results = await session.run({ [inputName]: inputTensor });
+  const out = results[outputName];
+
+  const outData = out.data;       // Float32Array
+  const dims = out.dims || out.dims_;
+  // Очікувано: [1,1,320,320] або [1,320,320,1]
+  let H = 320, W = 320;
+  if (Array.isArray(dims) && dims.length === 4) {
+    if (dims[2] && dims[3]) { H = dims[2]; W = dims[3]; }
+    else if (dims[1] && dims[2]) { H = dims[1]; W = dims[2]; }
+  }
+
+  // Логіти → ймовірності (сигмоїда) і малюємо у канву H×W
   const tmp = document.createElement("canvas");
-  tmp.width = target; tmp.height = target;
+  tmp.width = W; tmp.height = H;
   const tctx = tmp.getContext("2d");
-  // З outData будуємо ImageData (сіра карта)
-  const imgData = tctx.createImageData(target, target);
+  const imgData = tctx.createImageData(W, H);
+
   for (let i = 0; i < outData.length; i++) {
-    // outData може бути логітами; застосуємо сигмоїду
-    const v = 1 / (1 + Math.exp(-outData[i]));
+    const p = 1 / (1 + Math.exp(-outData[i])); // 0..1
+    const g = Math.max(0, Math.min(255, Math.round(p * 255)));
     const k = i * 4;
-    const g = Math.max(0, Math.min(255, Math.round(v * 255)));
-    imgData.data[k] = g; imgData.data[k+1] = g; imgData.data[k+2] = g; imgData.data[k+3] = 255;
+    imgData.data[k] = g;
+    imgData.data[k + 1] = g;
+    imgData.data[k + 2] = g;
+    imgData.data[k + 3] = 255;
   }
   tctx.putImageData(imgData, 0, 0);
 
-  // 2) Вирізаємо центральний прямокутник (де намальоване зображення)
+  // Вирізаємо центральну частину (де був оригінал) і масштабуємо під оригінал
   const sub = document.createElement("canvas");
   sub.width = w; sub.height = h;
-  const sctx = sub.getContext("2d");
-  sctx.drawImage(tmp, ox, oy, w, h, 0, 0, w, h);
+  sub.getContext("2d").drawImage(tmp, ox, oy, w, h, 0, 0, w, h);
 
-  // 3) Масштабуємо під оригінальний розмір
   const full = document.createElement("canvas");
-  full.width = originalImage.naturalWidth || originalImage.width;
-  full.height = originalImage.naturalHeight || originalImage.height;
+  const OW = originalImage.naturalWidth || originalImage.width;
+  const OH = originalImage.naturalHeight || originalImage.height;
+  full.width = OW; full.height = OH;
   const fctx = full.getContext("2d");
   fctx.imageSmoothingEnabled = true;
   fctx.imageSmoothingQuality = "high";
-  fctx.drawImage(sub, 0, 0, full.width, full.height);
+  fctx.drawImage(sub, 0, 0, OW, OH);
 
-  // 4) Отримаємо Float32 масив 0..1
-  const fullData = fctx.getImageData(0, 0, full.width, full.height).data;
-  const alpha = new Float32Array(full.width * full.height);
+  // Витягуємо альфу 0..1
+  const fullData = fctx.getImageData(0, 0, OW, OH).data;
+  const alpha = new Float32Array(OW * OH);
   for (let i = 0, j = 0; i < fullData.length; i += 4, j++) {
-    alpha[j] = fullData[i] / 255; // беремо червоний канал (усі рівні)
+    alpha[j] = fullData[i] / 255; // будь-який канал (однакові)
   }
-  return { alpha, width: full.width, height: full.height };
+  return { alpha, width: OW, height: OH };
 }
 
-// === 4) Композиція: фон (колір/картинка) + зображення з прозорим альфа-каналом ===
+/* =======================
+   5) Композиція: фон + прозорий форграунд
+   ======================= */
 function compositeWithAlpha(originalImage, alphaArr, w, h) {
-  // готуємо цільову канву під оригінал
-  canvas.width = w; canvas.height = h;
+  canvas.width = w;
+  canvas.height = h;
 
-  // фон
+  // Підкладка
   if (bgImg) {
     ctx.drawImage(bgImg, 0, 0, w, h);
   } else {
@@ -134,85 +179,87 @@ function compositeWithAlpha(originalImage, alphaArr, w, h) {
     ctx.fillRect(0, 0, w, h);
   }
 
-  // кладемо оригінал і задаємо альфу
-  fgCanvas.width = w; fgCanvas.height = h;
+  // Готуємо форграунд з альфою
+  fgCanvas.width = w;
+  fgCanvas.height = h;
   fgCtx.clearRect(0, 0, w, h);
   fgCtx.drawImage(originalImage, 0, 0, w, h);
 
   const fg = fgCtx.getImageData(0, 0, w, h);
   const d = fg.data;
-  const feather = Number(featherInput.value); // 0..3
-  // м’якість краю — легка гамма-корекція і трохи розмиття порога
+  const feather = Number(featherInput ? featherInput.value : 1.5); // 0..3
+
+  // Невелика "м’якість" по альфі через гамма-корекцію
+  const gamma = 1 / (1 + feather / 2);
   for (let i = 0, p = 0; i < d.length; i += 4, p++) {
     let a = alphaArr[p];
-    // підкрутимо м’якість: а^gamma, де gamma ~ 1/(1+feather/2)
-    const gamma = 1 / (1 + feather / 2);
     a = Math.pow(a, gamma);
-    d[i+3] = Math.max(0, Math.min(255, Math.round(a * 255)));
+    d[i + 3] = Math.max(0, Math.min(255, Math.round(a * 255)));
   }
   fgCtx.putImageData(fg, 0, 0);
 
-  // зверху — наш прозорий форграунд
+  // Зверху кладемо прозорий форграунд
   ctx.drawImage(fgCanvas, 0, 0);
 }
 
-// === 5) Хендлери (інтегруємо в потік) ===
-
-// Завантаження оригіналу
+/* =======================
+   6) Обробники подій
+   ======================= */
+// Upload основного зображення
 file.addEventListener("change", e => {
   const f = e.target.files?.[0];
   if (!f) return;
   const url = URL.createObjectURL(f);
   img = new Image();
-  img.onload = () => { URL.revokeObjectURL(url); draw(); };
+  img.onload = () => { URL.revokeObjectURL(url); lastMat = null; draw(); };
   img.src = url;
 });
 
-// Завантаження фону
+// Upload фону
 uploadBgBtn.addEventListener("click", () => bgFile.click());
 bgFile.addEventListener("change", e => {
   const f = e.target.files?.[0];
   if (!f) return;
   const url = URL.createObjectURL(f);
   bgImg = new Image();
-  bgImg.onload = () => { URL.revokeObjectURL(url); if (lastMat) compositeWithAlpha(img, lastMat.alpha, lastMat.width, lastMat.height); else draw(); };
+  bgImg.onload = () => {
+    URL.revokeObjectURL(url);
+    if (lastMat) compositeWithAlpha(img, lastMat.alpha, lastMat.width, lastMat.height);
+    else draw();
+  };
   bgImg.src = url;
 });
 
-// Зміна кольору фону
-picker.addEventListener("input", () => {
-  if (lastMat) compositeWithAlpha(img, lastMat.alpha, lastMat.width, lastMat.height);
-  else draw();
-});
+// Колір фону
+if (picker) {
+  picker.addEventListener("input", () => {
+    if (lastMat) compositeWithAlpha(img, lastMat.alpha, lastMat.width, lastMat.height);
+    else draw();
+  });
+}
 
-// Камера
+// Камера → знімок у img
 cameraBtn.addEventListener("click", async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
     const video = document.createElement("video");
     video.srcObject = stream;
     await video.play();
-    // знімок
-    canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0);
+
     const dataURL = canvas.toDataURL("image/png");
     stream.getTracks().forEach(t => t.stop());
+
     img = new Image();
-    img.onload = () => draw();
+    img.onload = () => { lastMat = null; draw(); };
     img.src = dataURL;
   } catch (e) {
-    alert("Не вдалося відкрити камеру. Перевір HTTPS/дозволи.");
+    alert("Не вдалося відкрити камеру. Переконайся у HTTPS та дозволах.");
   }
 });
-
-// Рендер без альфи (початковий перегляд)
-function draw() {
-  if (!img.src) return;
-  canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-  if (bgImg) ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
-  else { ctx.fillStyle = picker.value || "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height); }
-  ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-}
 
 // Автовидалення фону (AI)
 autoRemoveBtn.addEventListener("click", async () => {
@@ -221,8 +268,8 @@ autoRemoveBtn.addEventListener("click", async () => {
     lastMat = await runMatting(img);
     compositeWithAlpha(img, lastMat.alpha, lastMat.width, lastMat.height);
   } catch (err) {
-    console.error(err);
-    alert("Не вдалося обробити фон. Спробуй інше фото або перезавантаж сторінку.");
+    console.error("BGone matting error:", err);
+    alert("Не вдалося обробити фон. Перевір консоль (F12 → Console) і присутність /bgone/models/u2netp.onnx");
   }
 });
 
@@ -234,11 +281,10 @@ savePng.addEventListener("click", () => {
   a.click();
 });
 
-// Збереження PDF (через jsPDF)
-savePdf.addEventListener("click", () => {
-  const { jsPDF } = window.jspdf;
-  const pdf = new jsPDF({ orientation: canvas.width >= canvas.height ? "l" : "p", unit: "px", format: [canvas.width, canvas.height] });
-  const imgData = canvas.toDataURL("image/png");
-  pdf.addImage(imgData, "PNG", 0, 0, canvas.width, canvas.height);
-  pdf.save("bgone.pdf");
+/* =======================
+   7) Початковий стан
+   ======================= */
+window.addEventListener("load", () => {
+  // Пробуємо намалювати, якщо img уже був призначений деінде
+  if (img && img.complete && img.naturalWidth) draw();
 });
