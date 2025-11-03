@@ -109,13 +109,13 @@ async function runMatting(originalImage) {
   const { floatData, ox, oy, w, h, target } = imageToTensor(ib, 320);
 
   const inputName = session.inputNames[0];    // динамічні назви важливі!
-  const outputName = session.outputNames[0];
+ const outputName = session.outputNames[session.outputNames.length - 1]; // ← фінальний вихід
+console.log("Using I/O:", inputName, "->", outputName);
 
-  const inputTensor = new ort.Tensor("float32", floatData, [1, 3, target, target]);
-  const results = await session.run({ [inputName]: inputTensor });
-  const out = results[outputName];
-
-  const outData = out.data;       // Float32Array
+const inputTensor = new ort.Tensor("float32", floatData, [1, 3, target, target]);
+const results = await session.run({ [inputName]: inputTensor });
+const out = results[outputName];
+const outData = out.data;     // Float32Array
   const dims = out.dims || out.dims_;
   // Очікувано: [1,1,320,320] або [1,320,320,1]
   let H = 320, W = 320;
