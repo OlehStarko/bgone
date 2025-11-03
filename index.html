@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BGone</title>
+
+  <link rel="manifest" href="/bgone/manifest.webmanifest">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <link rel="apple-touch-icon" href="/bgone/icons/icon-192.png">
+  <link rel="stylesheet" href="/bgone/styles.css">
+</head>
+<body>
+  <main>
+    <h1>BGone</h1>
+
+    <input type="file" id="file" accept="image/*" />
+    <button id="camera">Відкрити камеру</button>
+    <input type="color" id="picker" value="#ffffff" />
+    <button id="uploadBgBtn">Upload BG</button>
+    <input type="file" id="bgFile" accept="image/*" style="display:none" />
+
+    <canvas id="canvas" style="max-width:100%;"></canvas>
+    <div>
+      <button id="savePng">Зберегти PNG</button>
+      <button id="savePdf">Зберегти PDF</button>
+    </div>
+  </main>
+
+  <script>
+    if ("serviceWorker" in navigator) {
+      navigator.serviceWorker.register("/bgone/sw.js", { scope: "/bgone/" });
+    }
+  </script>
+  <script src="/bgone/app.js"></script>
+</body>
+</html>
