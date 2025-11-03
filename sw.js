@@ -21,6 +21,7 @@ self.addEventListener("activate", e => {
   );
 });
 
+// ВАЖЛИВО: fetch-обробник — щоб Android робив WebAPK (не просто ярлик)
 self.addEventListener("fetch", e => {
   e.respondWith(caches.match(e.request).then(r => r || fetch(e.request)));
 });

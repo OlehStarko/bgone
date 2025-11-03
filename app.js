@@ -13,39 +13,43 @@ let bgImg = null;
 
 function draw() {
   if (!img.src) return;
-  // Підганяємо канву під оригінал (зберігаємо вихідну роздільну здатність)
+
+  // 1) Зберігаємо оригінальну роздільну здатність
   canvas.width = img.naturalWidth;
   canvas.height = img.naturalHeight;
 
-  // Малюємо фон (колір або зображення)
+  // 2) Малюємо фон (колір або завантажене зображення)
   if (bgImg) {
-    // впишемо BG по центру (простий варіант: розтягнути на весь розмір)
     ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
   } else {
     ctx.fillStyle = picker.value || "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
 
-  // Тут мав би бути ваш алгоритм видалення фону.
-  // Поки що — малюємо поверх вихідну картинку як заглушку.
+  // 3) ТУТ ВСТАВ СВІЙ АЛГОРИТМ ВИДАЛЕННЯ ФОНУ
+  //    Наприклад, якщо у тебе вже є маска/alpha — застосуй її перед малюванням.
+  //    Поки — просто малюємо оригінал поверх як заглушку:
   ctx.drawImage(img, 0, 0);
 }
 
-file.addEventListener("change", async e => {
+// --- Події ---
+file.addEventListener("change", e => {
   const f = e.target.files?.[0];
   if (!f) return;
+  const url = URL.createObjectURL(f);
   img = new Image();
-  img.onload = draw;
-  img.src = URL.createObjectURL(f);
+  img.onload = () => { URL.revokeObjectURL(url); draw(); };
+  img.src = url;
 });
 
 uploadBgBtn.addEventListener("click", () => bgFile.click());
 bgFile.addEventListener("change", e => {
   const f = e.target.files?.[0];
   if (!f) return;
+  const url = URL.createObjectURL(f);
   bgImg = new Image();
-  bgImg.onload = draw;
-  bgImg.src = URL.createObjectURL(f);
+  bgImg.onload = () => { URL.revokeObjectURL(url); draw(); };
+  bgImg.src = url;
 });
 
 picker.addEventListener("input", draw);
@@ -57,23 +61,18 @@ cameraBtn.addEventListener("click", async () => {
     video.srcObject = stream;
     await video.play();
 
-    // Кадр із відео
+    // Беремо кадр з відео
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
 
-    // Заповнюємо фоном
     if (bgImg) ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
-    else {
-      ctx.fillStyle = picker.value || "#ffffff";
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    }
-    // Знімаємо кадр
+    else { ctx.fillStyle = picker.value || "#ffffff"; ctx.fillRect(0, 0, canvas.width, canvas.height); }
+
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    // зупиняємо камеру
     stream.getTracks().forEach(t => t.stop());
-  } catch (e) {
-    alert("Не вдалося відкрити камеру. Переконайся, що сайт відкрито по HTTPS і є дозвіл.");
+  } catch (err) {
+    alert("Камеру не вдалося відкрити. Перевір HTTPS і дозвіл у браузері.");
   }
 });
 
@@ -85,7 +84,7 @@ savePng.addEventListener("click", () => {
 });
 
 savePdf.addEventListener("click", async () => {
-  // Легка PDF-заглушка: генеруємо PNG і підказуємо конвертацію у PDF через системний Share/Print
-  // Або пізніше додамо PDFLib/Canvas-to-PDF.
-  window.print(); // тимчасовий варіант; або додамо бібліотеку пізніше
+  // Тимчасово: системний друк → Зберегти як PDF.
+  // За потреби підключимо pdf-lib/jsPDF і зробимо справжній PDF 1:1.
+  window.print();
 });

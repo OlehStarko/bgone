@@ -1,77 +1,61 @@
 <!doctype html>
-<html lang="en">
+<html lang="uk">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>BGone – Background Remover</title>
+  <title>BGone</title>
 
-  <!-- PWA support -->
+  <!-- PWA -->
   <link rel="manifest" href="/bgone/manifest.webmanifest">
+  <meta name="theme-color" content="#0b0b0b">
+
+  <!-- iOS -->
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <link rel="apple-touch-icon" href="/bgone/icons/icon-192.png">
 
+  <link rel="stylesheet" href="/bgone/styles.css">
   <style>
-    body {
-      font-family: system-ui, sans-serif;
-      background: linear-gradient(135deg, #0b0b0b, #222);
-      color: white;
-      text-align: center;
-      padding: 40px;
+    body { font-family: system-ui, sans-serif; margin: 0; background:#0b0b0b; color:#fff; }
+    header { padding:16px; text-align:center; font-weight:600; }
+    main { padding:16px; max-width:920px; margin:0 auto; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    button, input[type="file"], input[type="color"] {
+      background:#1f6feb; color:#fff; border:none; border-radius:10px; padding:10px 14px; cursor:pointer;
     }
-    h1 { font-size: 2.5em; margin-bottom: 1em; }
-    button {
-      background: #007aff;
-      color: white;
-      font-size: 1.2em;
-      border: none;
-      padding: 15px 40px;
-      border-radius: 12px;
-      margin: 10px;
-      cursor: pointer;
-    }
-    button:active { background: #005ad1; }
-    #iosMsg { margin-top: 20px; display: none; font-size: 0.9em; color: #ccc; }
+    input[type="file"] { background:#30363d; }
+    canvas { width:100%; height:auto; background:#111; border-radius:12px; }
+    .hint { color:#aaa; font-size:14px; margin-top:8px; }
   </style>
 </head>
 <body>
-  <h1>Install BGone</h1>
-  <p>Remove backgrounds instantly from your phone 📱</p>
+  <header>BGone — видали фон, збережи PNG/PDF</header>
 
-  <button id="androidBtn">Download for Android</button>
-  <button id="iosBtn">Download for iOS</button>
+  <main>
+    <div class="row">
+      <input type="file" id="file" accept="image/*">
+      <button id="camera">Відкрити камеру</button>
+      <input type="color" id="picker" value="#ffffff" title="Колір фону">
+      <button id="uploadBgBtn">Upload BG</button>
+      <input type="file" id="bgFile" accept="image/*" style="display:none">
+    </div>
 
-  <p id="iosMsg">To install on iPhone: tap the <b>Share</b> icon → <b>Add to Home Screen</b>.</p>
+    <p class="hint">Порада: після обрізки фон можна замінити на колір або власне зображення.</p>
+
+    <canvas id="canvas"></canvas>
+
+    <div class="row" style="margin-top:12px">
+      <button id="savePng">Зберегти PNG</button>
+      <button id="savePdf">Зберегти PDF</button>
+    </div>
+  </main>
 
   <script>
-    let deferredPrompt;
-
-    // Отримуємо подію, коли браузер готовий показати установку
-    window.addEventListener('beforeinstallprompt', e => {
-      e.preventDefault();
-      deferredPrompt = e;
-    });
-
-    // Android
-    document.getElementById('androidBtn').addEventListener('click', async () => {
-      if (deferredPrompt) {
-        deferredPrompt.prompt();
-        const { outcome } = await deferredPrompt.userChoice;
-        deferredPrompt = null;
-      } else {
-        alert("If the install button doesn't appear, use Chrome menu → Install app.");
-      }
-    });
-
-    // iOS
-    document.getElementById('iosBtn').addEventListener('click', () => {
-      document.getElementById('iosMsg').style.display = 'block';
-    });
-
     // Реєстрація Service Worker
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('/bgone/sw.js', { scope: '/bgone/' });
     }
   </script>
+  <script src="/bgone/app.js"></script>
 </body>
 </html>
