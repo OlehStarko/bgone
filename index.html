@@ -1,38 +1,77 @@
 <!doctype html>
-<html lang="uk">
+<html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>BGone</title>
+  <title>BGone – Background Remover</title>
 
+  <!-- PWA support -->
   <link rel="manifest" href="/bgone/manifest.webmanifest">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <link rel="apple-touch-icon" href="/bgone/icons/icon-192.png">
-  <link rel="stylesheet" href="/bgone/styles.css">
+
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      background: linear-gradient(135deg, #0b0b0b, #222);
+      color: white;
+      text-align: center;
+      padding: 40px;
+    }
+    h1 { font-size: 2.5em; margin-bottom: 1em; }
+    button {
+      background: #007aff;
+      color: white;
+      font-size: 1.2em;
+      border: none;
+      padding: 15px 40px;
+      border-radius: 12px;
+      margin: 10px;
+      cursor: pointer;
+    }
+    button:active { background: #005ad1; }
+    #iosMsg { margin-top: 20px; display: none; font-size: 0.9em; color: #ccc; }
+  </style>
 </head>
 <body>
-  <main>
-    <h1>BGone</h1>
+  <h1>Install BGone</h1>
+  <p>Remove backgrounds instantly from your phone 📱</p>
 
-    <input type="file" id="file" accept="image/*" />
-    <button id="camera">Відкрити камеру</button>
-    <input type="color" id="picker" value="#ffffff" />
-    <button id="uploadBgBtn">Upload BG</button>
-    <input type="file" id="bgFile" accept="image/*" style="display:none" />
+  <button id="androidBtn">Download for Android</button>
+  <button id="iosBtn">Download for iOS</button>
 
-    <canvas id="canvas" style="max-width:100%;"></canvas>
-    <div>
-      <button id="savePng">Зберегти PNG</button>
-      <button id="savePdf">Зберегти PDF</button>
-    </div>
-  </main>
+  <p id="iosMsg">To install on iPhone: tap the <b>Share</b> icon → <b>Add to Home Screen</b>.</p>
 
   <script>
-    if ("serviceWorker" in navigator) {
-      navigator.serviceWorker.register("/bgone/sw.js", { scope: "/bgone/" });
+    let deferredPrompt;
+
+    // Отримуємо подію, коли браузер готовий показати установку
+    window.addEventListener('beforeinstallprompt', e => {
+      e.preventDefault();
+      deferredPrompt = e;
+    });
+
+    // Android
+    document.getElementById('androidBtn').addEventListener('click', async () => {
+      if (deferredPrompt) {
+        deferredPrompt.prompt();
+        const { outcome } = await deferredPrompt.userChoice;
+        deferredPrompt = null;
+      } else {
+        alert("If the install button doesn't appear, use Chrome menu → Install app.");
+      }
+    });
+
+    // iOS
+    document.getElementById('iosBtn').addEventListener('click', () => {
+      document.getElementById('iosMsg').style.display = 'block';
+    });
+
+    // Реєстрація Service Worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/bgone/sw.js', { scope: '/bgone/' });
     }
   </script>
-  <script src="/bgone/app.js"></script>
 </body>
 </html>
