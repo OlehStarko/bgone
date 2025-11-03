@@ -1,5 +1,5 @@
 /* =======================
-   BGone – app.js (FINAL)
+   BGone – app.js (FINAL+threshold)
    ======================= */
 
 /* ---- UI елементи ---- */
@@ -9,16 +9,18 @@ const picker = document.getElementById("picker");
 const uploadBgBtn = document.getElementById("uploadBgBtn");
 const bgFile = document.getElementById("bgFile");
 const savePng = document.getElementById("savePng");
-const autoRemoveBtn = document.getElementById("autoRemove"); // "Автовидалення фону (AI)"
-const featherInput = document.getElementById("feather");      // 0..3
+const autoRemoveBtn = document.getElementById("autoRemove");   // "Автовидалення фону (AI)"
+const featherInput = document.getElementById("feather");       // 0..3
+const thresholdInput = document.getElementById("threshold");   // 0..1
+const invertInput = document.getElementById("invert");         // checkbox
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
 /* ---- Стани ---- */
-let img = new Image();          // вихідне зображення
-let bgImg = null;               // фон-картинка
-let session = null;             // ONNX Runtime сесія
-let lastMat = null;             // { alpha: Float32Array, width, height }
+let img = new Image();        // вихідне зображення
+let bgImg = null;             // фон-картинка
+let session = null;           // ONNX Runtime сесія
+let lastMat = null;           // { alpha: Float32Array, width, height }
 
 /* ---- Робоча канва для прозорого форграунду ---- */
 const fgCanvas = document.createElement("canvas");
@@ -26,10 +28,9 @@ const fgCtx = fgCanvas.getContext("2d", { willReadFrequently: true });
 
 /* ---- Налаштування ---- */
 const MODEL_PATH = "/bgone/models/u2netp.onnx";
-const INVERT_ALPHA = false; // якщо побачиш, що "вирізається навпаки" — постав true
 
 /* =======================
-   1) Базове відмальовування
+   Базове відмальовування
    ======================= */
 function draw() {
   if (!img.src) return;
@@ -38,19 +39,18 @@ function draw() {
 
   if (bgImg) ctx.drawImage(bgImg, 0, 0, canvas.width, canvas.height);
   else {
-    ctx.fillStyle = picker.value || "#ffffff";
+    ctx.fillStyle = picker?.value || "#ffffff";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
   }
   ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 }
 
 /* =======================
-   2) Підготовка вхідного тензора 1×3×320×320 (NCHW)
+   Підготовка тензора 1×3×320×320 (NCHW)
    ======================= */
 function imageToTensor(imageBitmap, target = 320) {
   const tmp = document.createElement("canvas");
-  tmp.width = target;
-  tmp.height = target;
+  tmp.width = target; tmp.height = target;
   const tctx = tmp.getContext("2d", { willReadFrequently: true });
 
   const scale = Math.min(target / imageBitmap.width, target / imageBitmap.height);
@@ -78,7 +78,7 @@ function imageToTensor(imageBitmap, target = 320) {
 }
 
 /* =======================
-   3) Завантаження моделі (1 раз)
+   Завантаження моделі (1 раз)
    ======================= */
 async function loadModel() {
   if (session) return;
@@ -92,7 +92,8 @@ async function loadModel() {
 }
 
 /* =======================
-   4) Інференс: усереднюємо ВСІ виходи -> маска 0..1
+   Інференс: усереднюємо ВСІ виходи -> маска 0..1
+   + нормалізація (перцентилі) + поріг + інверт
    ======================= */
 async function runMatting(originalImage) {
   await loadModel();
@@ -101,7 +102,7 @@ async function runMatting(originalImage) {
   const { floatData, ox, oy, w, h, target } = imageToTensor(ib, 320);
 
   const inputName = session.inputNames[0];
-  const outputNames = session.outputNames.slice(); // очікуємо ~7 штук
+  const outputNames = session.outputNames.slice(); // очікуємо 7
 
   const inputTensor = new ort.Tensor("float32", floatData, [1, 3, target, target]);
   const results = await session.run({ [inputName]: inputTensor });
@@ -123,8 +124,7 @@ async function runMatting(originalImage) {
 
     const probs = new Float32Array(data.length);
     for (let i = 0; i < data.length; i++) {
-      const v = data[i];
-      probs[i] = 1 / (1 + Math.exp(-v)); // sigmoid
+      probs[i] = 1 / (1 + Math.exp(-data[i])); // sigmoid
     }
 
     if (!merged) merged = probs;
@@ -134,15 +134,29 @@ async function runMatting(originalImage) {
   });
 
   if (!merged) throw new Error("Модель не повернула виходів.");
-
   for (let i = 0; i < merged.length; i++) merged[i] /= outputNames.length;
 
-  // Невеликий лог для діагностики
+  // 2) Нормалізація контрасту: розтяг 5..95 перцентилів у 0..1
+  function percentile(arr, p) {
+    const a = new Float32Array(arr.length);
+    a.set(arr);
+    a.sort();
+    const idx = Math.min(a.length - 1, Math.max(0, Math.round((p/100) * (a.length - 1))));
+    return a[idx];
+  }
+  const lo = percentile(merged, 5);
+  const hi = percentile(merged, 95);
+  const range = Math.max(1e-6, hi - lo);
+  for (let i = 0; i < merged.length; i++) {
+    let v = (merged[i] - lo) / range;
+    if (v < 0) v = 0; if (v > 1) v = 1;
+    merged[i] = v;
+  }
   let min = 1, max = 0;
   for (let i = 0; i < merged.length; i++) { if (merged[i] < min) min = merged[i]; if (merged[i] > max) max = merged[i]; }
-  console.log(`Mat range: min=${min.toFixed(3)} max=${max.toFixed(3)} (H=${H}, W=${W})`);
+  console.log(`Mat (stretched) range: min=${min.toFixed(3)} max=${max.toFixed(3)} (H=${H}, W=${W})`);
 
-  // 2) Малюємо маску H×W
+  // 3) Малюємо маску H×W
   const tmp = document.createElement("canvas");
   tmp.width = W; tmp.height = H;
   const tctx = tmp.getContext("2d");
@@ -157,7 +171,7 @@ async function runMatting(originalImage) {
   }
   tctx.putImageData(imgData, 0, 0);
 
-  // 3) Вирізаємо центральну частину (ox,oy,w,h) і масштабуємо під оригінал
+  // 4) Вирізаємо центральну частину (ox,oy,w,h) і масштабуємо під оригінал
   const sub = document.createElement("canvas");
   sub.width = w; sub.height = h;
   sub.getContext("2d").drawImage(tmp, ox, oy, w, h, 0, 0, w, h);
@@ -171,11 +185,17 @@ async function runMatting(originalImage) {
   fctx.imageSmoothingQuality = "high";
   fctx.drawImage(sub, 0, 0, OW, OH);
 
+  // 5) Формуємо фінальну альфу з м’яким порогом + опційний інверт
+  const thr = thresholdInput ? Number(thresholdInput.value) : 0.35;
+  const invert = invertInput ? invertInput.checked : false;
+  const kSlope = 10; // крутизна S-функції
+
   const fullData = fctx.getImageData(0, 0, OW, OH).data;
   const alpha = new Float32Array(OW * OH);
   for (let i = 0, j = 0; i < fullData.length; i += 4, j++) {
-    let a = fullData[i] / 255; // беремо будь-який канал
-    if (INVERT_ALPHA) a = 1 - a;
+    let a = fullData[i] / 255;          // 0..1
+    a = 1 / (1 + Math.exp(-(a - thr) * kSlope)); // м’який поріг
+    if (invert) a = 1 - a;
     alpha[j] = a;
   }
 
@@ -183,22 +203,18 @@ async function runMatting(originalImage) {
 }
 
 /* =======================
-   5) Композиція: фон + прозорий форграунд
+   Композиція: фон + прозорий форграунд
    ======================= */
 function compositeWithAlpha(originalImage, alphaArr, w, h) {
-  canvas.width = w;
-  canvas.height = h;
+  canvas.width = w; canvas.height = h;
 
-  // фон
   if (bgImg) ctx.drawImage(bgImg, 0, 0, w, h);
   else {
-    ctx.fillStyle = picker.value || "#ffffff";
+    ctx.fillStyle = picker?.value || "#ffffff";
     ctx.fillRect(0, 0, w, h);
   }
 
-  // форграунд з альфою
-  fgCanvas.width = w;
-  fgCanvas.height = h;
+  fgCanvas.width = w; fgCanvas.height = h;
   fgCtx.clearRect(0, 0, w, h);
   fgCtx.drawImage(originalImage, 0, 0, w, h);
 
@@ -218,10 +234,10 @@ function compositeWithAlpha(originalImage, alphaArr, w, h) {
 }
 
 /* =======================
-   6) Обробники подій
+   Обробники подій
    ======================= */
 // Upload основного зображення
-file.addEventListener("change", e => {
+file?.addEventListener("change", e => {
   const f = e.target.files?.[0];
   if (!f) return;
   const url = URL.createObjectURL(f);
@@ -231,8 +247,8 @@ file.addEventListener("change", e => {
 });
 
 // Upload фону
-uploadBgBtn.addEventListener("click", () => bgFile.click());
-bgFile.addEventListener("change", e => {
+uploadBgBtn?.addEventListener("click", () => bgFile?.click());
+bgFile?.addEventListener("change", e => {
   const f = e.target.files?.[0];
   if (!f) return;
   const url = URL.createObjectURL(f);
@@ -246,13 +262,13 @@ bgFile.addEventListener("change", e => {
 });
 
 // Зміна кольору фону
-picker.addEventListener("input", () => {
+picker?.addEventListener("input", () => {
   if (lastMat) compositeWithAlpha(img, lastMat.alpha, lastMat.width, lastMat.height);
   else draw();
 });
 
 // Камера → знімок у img
-cameraBtn.addEventListener("click", async () => {
+cameraBtn?.addEventListener("click", async () => {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
     const video = document.createElement("video");
@@ -275,7 +291,7 @@ cameraBtn.addEventListener("click", async () => {
 });
 
 // Автовидалення фону (AI)
-autoRemoveBtn.addEventListener("click", async () => {
+autoRemoveBtn?.addEventListener("click", async () => {
   if (!img.src) { alert("Спочатку завантаж зображення або зроби фото."); return; }
   try {
     lastMat = await runMatting(img);
@@ -286,8 +302,16 @@ autoRemoveBtn.addEventListener("click", async () => {
   }
 });
 
+// Поріг/інверт/м’якість → оновити результат
+[thresholdInput, invertInput, featherInput].forEach(el => {
+  if (!el) return;
+  el.addEventListener("input", () => {
+    if (lastMat) compositeWithAlpha(img, lastMat.alpha, lastMat.width, lastMat.height);
+  });
+});
+
 // Збереження PNG
-savePng.addEventListener("click", () => {
+savePng?.addEventListener("click", () => {
   const a = document.createElement("a");
   a.href = canvas.toDataURL("image/png");
   a.download = "bgone.png";
@@ -295,7 +319,7 @@ savePng.addEventListener("click", () => {
 });
 
 /* =======================
-   7) Початковий стан
+   Початковий стан
    ======================= */
 window.addEventListener("load", () => {
   if (img && img.complete && img.naturalWidth) draw();
